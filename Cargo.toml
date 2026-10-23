@@ -1,0 +1,14 @@
+[package]
+name = "hdvideo2csi-bridge"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-only"
+
+[[bin]]
+name = "hd2csi"
+path = "src/main.rs"
+
+[dependencies]
+nix = { version = "0.31.2", features = ["ioctl", "poll"] }
+log = "0.4.29"
+env_logger = "0.11"
