@@ -32,6 +32,7 @@
 use std::time::Duration;
 
 use crate::app::audio::Audio;
+use crate::app::health::Health;
 use crate::config::*;
 use crate::drv::audio::Rate;
 use crate::drv::{
@@ -40,6 +41,7 @@ use crate::drv::{
 };
 use crate::format::{MipiFormat, PixelEncoding};
 use crate::reg;
+use crate::stub::Failure;
 use crate::time;
 use crate::time::Timer;
 use crate::timing::Timing;
@@ -144,6 +146,11 @@ pub struct Rx {
 
     /// 5V source-detect line as last observed by the FSM.
     pub source_det: Level,
+    /// The source sends no AVI InfoFrame (DVI signalling); latched in
+    /// [`RxState::PktRdy`].
+    pub dvi: bool,
+    /// Failure streak, lock count and measurements; see [`Health`].
+    pub health: Health,
 
     pub vid_chk_scan: bool,
 
@@ -256,10 +263,19 @@ impl Rx {
         }
         let last = std::mem::replace(&mut self.state, new);
         self.state_changed = true;
-        log::debug!("Receiver state: {:?} -> {:?}", last, new);
+        log::log!(
+            self.health.progress_level(),
+            "Receiver state: {:?} -> {:?}",
+            last,
+            new
+        );
 
         if new == RxState::PlayBack {
-            log::info!("Receiver video is ready");
+            self.health.locked();
+        }
+        if new <= RxState::WaitSource {
+            // A new connection, or a new EDID: the next attempt starts over.
+            self.health.reconnected();
         }
         if last == RxState::PlayBack {
             self.audio.stop();
@@ -291,7 +307,7 @@ impl Rx {
                     // path brought us here; wait it out before rewriting the
                     // EDID SRAM and re-raising HPD.
                     if self.source_det.is_high() && self.hpd_hold.due(HPD_HOLD) {
-                        log::info!("Connecting receiver to source");
+                        log::debug!("Connecting receiver to source");
                         edid::edid_set(&kernel_edid);
                         edid::ddc_slave_set(true);
                         drv_rx::hpd_set(Level::High);
@@ -318,16 +334,17 @@ impl Rx {
                 if SCRAMBLER_RX_MODE != SCRAMBLER_NOT {
                     drv_vscr::re_auth_clear();
                 }
-                if !drv_rx::pll_cali() {
-                    log::error!("Failed to calibrate receiver PLL");
+                if let Err(e) = drv_rx::pll_cali() {
+                    self.health.fail(Failure::LinkSetup, e);
                     return;
                 }
-                log::info!("Receiver equalization started");
+                log::debug!("Receiver equalization started");
                 if auto_eq::eq_set() {
-                    log::info!("Receiver equalization completed");
+                    log::debug!("Receiver equalization completed");
                     self.set_state(RxState::PktRdy);
                 } else {
-                    log::error!("Failed to equalize receiver channels");
+                    self.health
+                        .fail(Failure::LinkSetup, "receiver channel equalization failed");
                 }
             }
             RxState::PktRdy => {
@@ -340,14 +357,19 @@ impl Rx {
                     match drv_rx::chk_avi_rcv(self) {
                         Stability::Stable => {
                             drv_rx::avi_gcp_chg_int_en();
+                            self.dvi = drv_sys::pkt_header_empty();
                             self.avi_packet_cnt = 0;
                             self.set_state(RxState::VideoCheck);
                             return;
                         }
                         Stability::Unstable => {
-                            log::error!("AVI packet mismatch");
+                            log::debug!("AVI packet mismatch");
                             self.avi_packet_cnt += 1;
                             if self.avi_packet_cnt > 2 {
+                                self.health.fail(
+                                    Failure::Infoframe,
+                                    "AVI InfoFrame changed 3 times; resetting the receiver",
+                                );
                                 self.avi_packet_cnt = 0;
                                 self.set_state(RxState::PowerOn);
                                 return;
@@ -363,7 +385,7 @@ impl Rx {
                     let (pe, _, fmt, _) = drv_rx::format_update(self.format);
                     self.pixel_encoding = pe;
                     self.format = fmt;
-                    log::info!("Receiver input format: {}", fmt);
+                    log::debug!("Receiver input format: {}", fmt);
                     drv_rx::half_pix_pll_set();
                     self.vid_chk_scan = false;
                     self.timer.start();
@@ -374,18 +396,27 @@ impl Rx {
                             // Latch the timing — the receiver is its sole
                             // owner — and log it.
                             self.timing = drv_sys::video_check_all_get();
+                            let t = self.timing;
+                            let frame_rate_mhz = drv_sys::frame_rate_mhz();
                             log::info!(
-                                "Receiver frame rate: {} Hz",
-                                drv_sys::video_check_frame_rate_get()
+                                "Receiver locked: {}x{} at {:.2} Hz, pixel clock {:.2} MHz, total {}x{}, {}, {}",
+                                t.h_active,
+                                t.v_active,
+                                frame_rate_mhz as f64 / 1000.0,
+                                t.pixel_clock as f64 / 1000.0,
+                                t.h_total,
+                                t.v_total,
+                                self.format,
+                                if self.dvi { "DVI" } else { "HDMI" }
                             );
-                            log::info!("Receiver timing: {:?}", self.timing);
+                            log::debug!("Receiver timing: {:?}", t);
                             self.format_pending = true;
                             self.vid_chk_scan = true;
                             self.set_state(RxState::PlayBack);
                             return;
                         }
                         Stability::Unstable => {
-                            log::error!("Failed to validate receiver video timing");
+                            self.fail_video_check();
                             self.set_state(RxState::ClkStableCheck);
                             return;
                         }
@@ -444,20 +475,30 @@ impl Rx {
         // ---- rewinds to ClkStableCheck ----
         if self.state > RxState::ClkStableCheck && !drv_rx::clk_stable() {
             reg::clear_bit(0xE10A, 7);
-            log::warn!("Receiver TMDS clock is unstable; checking clock stability");
+            self.health.fail(
+                Failure::ClockLost,
+                format_args!("TMDS clock unstable in {:?}", self.state),
+            );
             self.set_state(RxState::ClkStableCheck);
         }
         if self.state > RxState::VideoCheck && !drv_rx::video_stable() && !self.vid_chk_scan {
             reg::clear_bit(0xE10A, 7);
-            log::warn!("Receiver video timing is unstable; checking clock stability");
+            self.health.fail(
+                Failure::SyncLost,
+                "video-check stable flag dropped during playback",
+            );
             self.set_state(RxState::ClkStableCheck);
         }
         // ---- rewind to PllConfig ----
         if self.state > RxState::PllConfig && !drv_rx::pll_locked() {
             reg::clear_bit(0xE10A, 7);
-            log::warn!(
-                "Receiver PLL lost lock: Register E5F1=0x{:02X}; recalibrating",
-                reg::read(0xE5F1)
+            self.health.fail(
+                Failure::ClockLost,
+                format_args!(
+                    "receiver PLL lost lock in {:?} (Register E5F1=0x{:02X}); recalibrating",
+                    self.state,
+                    reg::read(0xE5F1)
+                ),
             );
             self.set_state(RxState::PllConfig);
         }
@@ -495,6 +536,32 @@ impl Rx {
         }
     }
 
+    /// Record a video check that never settled, logging what the chip
+    /// measured.
+    fn fail_video_check(&mut self) {
+        let raw = drv_sys::video_check_all_get();
+        let frame_rate_mhz = drv_sys::frame_rate_mhz();
+        let frame_rate = if frame_rate_mhz == 0 {
+            "no vertical sync".to_string()
+        } else {
+            format!("{:.2} Hz", frame_rate_mhz as f64 / 1000.0)
+        };
+        self.health.fail(
+            Failure::NoSync,
+            format_args!(
+                "pixel clock {:.2} MHz, {}, stable flag {} (Register E580=0x{:02X}), raw {}x{} of {}x{}",
+                raw.pixel_clock as f64 / 1000.0,
+                frame_rate,
+                if drv_rx::video_stable() { "set" } else { "clear" },
+                reg::read(0xE580),
+                raw.h_active,
+                raw.v_active,
+                raw.h_total,
+                raw.v_total
+            ),
+        );
+    }
+
     /// Resolve the video-check result: progressive formats gate on the chip's
     /// stable bit; interlaced formats fall back to a timing scan.
     fn vid_chk_deal(&mut self) -> Stability {
@@ -511,7 +578,7 @@ impl Rx {
             }
             Stability::Unstable => {
                 if drv_rx::vid_chk_scan(self) {
-                    log::info!("Receiver video timing scan completed");
+                    log::debug!("Receiver video timing scan completed");
                     Stability::Stable
                 } else {
                     Stability::Unstable

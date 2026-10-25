@@ -38,7 +38,8 @@ fn pll_cali_set() {
     reg::or(0xE734, 0x80);
 }
 
-pub fn pll_cali() -> bool {
+/// Calibrate the receiver PLL; the error says which step failed.
+pub fn pll_cali() -> Result<(), &'static str> {
     log::debug!("Receiver PLL calibration started");
     pll_cali_set();
     let mut cnt: u8 = 0;
@@ -50,12 +51,10 @@ pub fn pll_cali() -> bool {
         }
     }
     if (reg::read(0xE735) & 0x03) != 0x02 {
-        log::error!("Failed to calibrate receiver PLL");
-        return false;
+        return Err("receiver PLL calibration did not finish");
     }
     if reg::get_bit(0xE735, 3) == 0 {
-        log::error!("Receiver PLL is unlocked");
-        return false;
+        return Err("receiver PLL did not lock after calibration");
     }
     log::debug!(
         "Receiver PLL calibration: Register E736=0x{:02X}, Register E737=0x{:02X}",
@@ -63,7 +62,7 @@ pub fn pll_cali() -> bool {
         reg::read(0xE737)
     );
     vco_div_reset();
-    true
+    Ok(())
 }
 
 pub fn csc_src_sel() {

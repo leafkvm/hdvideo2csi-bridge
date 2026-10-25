@@ -18,6 +18,8 @@ use crate::timing::Timing;
 const IOC_MAGIC: u8 = b'H';
 const ABI_VERSION: u32 = 2;
 const MAX_MBUS_CODES: usize = 8;
+/// `features` bit: the kernel takes REPORT_STATUS.
+const FEAT_STATUS: u32 = 1 << 0;
 
 // Event types
 pub const EVT_EDID_UPDATE: u32 = 1;
@@ -92,7 +94,8 @@ struct VideoInputCsiCaps {
     abi_version: u32,
     num_mbus_codes: u32,
     mbus_codes: [u32; MAX_MBUS_CODES],
-    reserved: [u32; 6],
+    features: u32,
+    reserved: [u32; 5],
 }
 
 impl VideoInputCsiCaps {
@@ -221,6 +224,64 @@ pub struct VideoInputCsiEvent {
     pub value: u32,
 }
 
+/// Receiver progress, mirrored from `HDMI_CSI_RX_*`. Chip-independent: each
+/// stage names what the receiver is waiting for.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[repr(u8)]
+pub enum RxStage {
+    #[default]
+    NoEdid = 1,
+    NoSource = 2,
+    Connecting = 3,
+    WaitClock = 4,
+    LinkSetup = 5,
+    WaitInfoframe = 6,
+    WaitSync = 7,
+    Locked = 8,
+}
+
+/// Cause of a failed bring-up step, mirrored from `HDMI_CSI_ERR_*`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Failure {
+    ClockLost = 1,
+    LinkSetup = 2,
+    Infoframe = 3,
+    NoSync = 4,
+    SyncLost = 5,
+    BadTiming = 6,
+    Format = 7,
+}
+
+impl std::fmt::Display for Failure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Failure::ClockLost => "Link clock lost",
+            Failure::LinkSetup => "Link setup failed",
+            Failure::Infoframe => "Infoframes are inconsistent",
+            Failure::NoSync => "Video timing did not settle",
+            Failure::SyncLost => "Video timing lost",
+            Failure::BadTiming => "Video timing cannot be output",
+            Failure::Format => "Input format cannot be output",
+        })
+    }
+}
+
+/// Receiver progress, mirrored from `struct hdmi_csi_status`. The kernel
+/// fills `sequence` itself; it stays zero here.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Status {
+    pub rx_stage: u8,
+    pub last_error: u8,
+    pub reserved1: u16,
+    pub error_count: u32,
+    pub reserved: [u32; 4],
+    pub sequence: u32,
+}
+
+const _: () = assert!(std::mem::size_of::<Status>() == 28);
+
 // ---------- ioctl definitions ----------
 
 nix::ioctl_read!(ioc_get_caps, IOC_MAGIC, 5, VideoInputCsiCaps);
@@ -234,6 +295,7 @@ nix::ioctl_read!(
     4,
     VideoInputCsiStreamStatus
 );
+nix::ioctl_write_ptr!(ioc_report_status, IOC_MAGIC, 7, Status);
 
 // ---------- High-level wrapper ----------
 
@@ -262,9 +324,14 @@ impl StubDevice {
         })?;
         caps.validate()?;
         log::info!(
-            "Kernel stub capabilities: ABI version={}, media-bus codes={:04X?}",
+            "Kernel stub capabilities: ABI version={}, media-bus codes={:04X?}, status reports={}",
             caps.abi_version,
-            &caps.mbus_codes[..caps.num_mbus_codes as usize]
+            &caps.mbus_codes[..caps.num_mbus_codes as usize],
+            if caps.features & FEAT_STATUS != 0 {
+                "yes"
+            } else {
+                "no"
+            }
         );
         Ok(Self { file, caps })
     }
@@ -286,6 +353,16 @@ impl StubDevice {
         }
         let report = video.map_or_else(VideoInputCsiVideo::default, VideoInputCsiVideo::from);
         unsafe { ioc_report_video(self.file.as_raw_fd(), &report) }.map_err(io::Error::from)?;
+        Ok(())
+    }
+
+    /// Report receiver progress. A kernel without status support ignores
+    /// them, so the daemon still runs on an older stub.
+    pub fn report_status(&self, status: &Status) -> io::Result<()> {
+        if self.caps.features & FEAT_STATUS == 0 {
+            return Ok(());
+        }
+        unsafe { ioc_report_status(self.file.as_raw_fd(), status) }.map_err(io::Error::from)?;
         Ok(())
     }
 
@@ -382,6 +459,10 @@ pub fn supports_output_format(format: MipiFormat) -> bool {
 
 pub fn report_video(video: Option<VideoState>) -> io::Result<()> {
     with(|d| d.report_video(video))
+}
+
+pub fn report_status(status: &Status) -> io::Result<()> {
+    with(|d| d.report_status(status))
 }
 
 pub fn report_audio(sample_rate: u32, present: bool) -> io::Result<()> {

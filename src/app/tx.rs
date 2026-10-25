@@ -18,6 +18,7 @@ use crate::config::*;
 use crate::drv::mipi_tx as drv_tx;
 use crate::format::{BitDepth, MipiFormat, PixelEncoding};
 use crate::reg;
+use crate::stub::Failure;
 use crate::time::Timer;
 use crate::timing::Timing;
 
@@ -104,6 +105,10 @@ pub struct Tx {
     pub base_data_rate: u32,
 
     pub check_reg_timer: Timer,
+
+    /// A bring-up step failed this tick; [`crate::app::App`] takes it into
+    /// the receiver's health record.
+    pub failure: Option<(Failure, &'static str)>,
 }
 
 impl Tx {
@@ -123,7 +128,7 @@ impl Tx {
         }
         let last = std::mem::replace(&mut self.state, new);
         self.state_changed = true;
-        log::debug!("Transmitter state: {:?} -> {:?}", last, new);
+        log::info!("Transmitter state: {:?} -> {:?}", last, new);
     }
 
     /// Consume the one-shot "just entered this state" flag.
@@ -169,9 +174,10 @@ impl Tx {
                     self.video_off();
                 }
                 if env.video {
-                    log::info!("Transmitter input video is ready");
-                    if self.resolution_config(env.frame, &env.timing) {
-                        self.set_state(TxState::ConfigVideoAudio);
+                    log::debug!("Transmitter input video is ready");
+                    match self.resolution_config(env.frame, &env.timing) {
+                        Ok(()) => self.set_state(TxState::ConfigVideoAudio),
+                        Err(failure) => self.failure = Some(failure),
                     }
                 }
             }
@@ -191,6 +197,13 @@ impl Tx {
                     drv_tx::dphy_clk_hs_trig();
                     drv_tx::dphy_skew_cali();
                 }
+                log::info!(
+                    "CSI output configured: {}, {} port(s) x {} lanes at {} Mbit/s per lane",
+                    self.format,
+                    self.port_num,
+                    self.lane_num,
+                    self.data_rate / 1000
+                );
                 self.set_state(TxState::AwaitStream);
             }
             TxState::AwaitStream => {
@@ -281,10 +294,13 @@ impl Tx {
         }
     }
 
-    fn resolution_config(&self, frame: TxFrame, timing: &Timing) -> bool {
+    fn resolution_config(
+        &self,
+        frame: TxFrame,
+        timing: &Timing,
+    ) -> Result<(), (Failure, &'static str)> {
         if !frame.interlace && reg::read(0xE580) & 0x04 == 0 {
-            log::warn!("Transmitter input timing is unstable");
-            return false;
+            return Err((Failure::SyncLost, "transmitter input timing is unstable"));
         }
 
         let h_ok = timing.h_total == timing.h_active + timing.h_sw + timing.h_fp + timing.h_bp;
@@ -294,14 +310,16 @@ impl Tx {
                 + timing.v_fp as u32
                 + timing.v_bp as u32;
         if h_ok && v_ok && timing.v_active & 1 == 0 && timing.h_active & 1 == 0 {
-            log::info!("Transmitter timing: {:?}", timing);
+            log::debug!("Transmitter timing: {:?}", timing);
             drv_tx::timing_set(timing);
             drv_tx::in_hsync_pol_sel(timing.h_spol);
             drv_tx::in_vsync_pol_sel(timing.v_spol);
-            true
+            Ok(())
         } else {
-            log::warn!("Transmitter timing parameters are invalid");
-            false
+            Err((
+                Failure::BadTiming,
+                "measured porches do not add up to the totals, or a size is odd",
+            ))
         }
     }
 
@@ -371,7 +389,7 @@ impl Tx {
         drv_tx::port_set(self.port_num);
         drv_tx::three_d_mode_set(self.three_d_mode);
         drv_tx::csi_data_type_set(self.format);
-        log::info!("Transmitter output format: {}", self.format);
+        log::debug!("Transmitter output format: {}", self.format);
     }
 
     fn analog_config(&self) {

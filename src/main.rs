@@ -38,7 +38,29 @@ impl Args {
 }
 
 fn main() -> std::io::Result<()> {
-    env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
+    let mut logger = env_logger::Builder::from_env(Env::default().default_filter_or("info"));
+    if std::env::var_os("JOURNAL_STREAM").is_some() {
+        // journald adds the time; the <N> prefix gives it the syslog priority
+        // (so `journalctl -p warning` works).
+        logger.format(|buf, record| {
+            use std::io::Write;
+            let priority = match record.level() {
+                log::Level::Error => 3,
+                log::Level::Warn => 4,
+                log::Level::Info => 6,
+                log::Level::Debug | log::Level::Trace => 7,
+            };
+            let target = record.target();
+            let target = target.strip_prefix("hd2csi::").unwrap_or(target);
+            writeln!(
+                buf,
+                "<{priority}>{:<5} {target}: {}",
+                record.level(),
+                record.args()
+            )
+        });
+    }
+    logger.init();
     log::info!(
         "Starting {} {}",
         env!("CARGO_PKG_NAME"),

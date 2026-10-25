@@ -35,14 +35,17 @@ pub const AD_AUDPLL_256FS_CLK: u8 = 0x1D;
 pub const FREQ_METER_1: u8 = 1;
 pub const FREQ_METER_2: u8 = 2;
 
-pub fn video_check_frame_rate_get() -> u8 {
-    let sum = ((reg::read(0xE583) as u32) << 16)
-        | ((reg::read(0xE584) as u32) << 8)
-        | reg::read(0xE585) as u32;
-    if sum == 0 {
+/// Measured frame rate in millihertz, from the frame-period counter of
+/// the video check (40 MHz ticks per frame). Zero when the counter is empty or
+/// saturated, i.e. no vertical sync arrived.
+pub fn frame_rate_mhz() -> u32 {
+    let sum = ((reg::read(0xE583) as u64) << 16)
+        | ((reg::read(0xE584) as u64) << 8)
+        | reg::read(0xE585) as u64;
+    if sum == 0 || sum == 0xFF_FFFF {
         return 0;
     }
-    (40_000_000.0_f64 / sum as f64 + 0.5) as u8
+    (40_000_000_000 / sum) as u32
 }
 
 pub fn video_check_single_get(para: u8) -> u32 {
@@ -96,6 +99,12 @@ pub fn video_check_all_get() -> Timing {
 pub fn pkt_hd_header_set(opt: u8) {
     reg::write(0xE80A, opt);
     time::delay_ms(5);
+}
+
+/// The selected packet header reads all zero: nothing of that type arrives.
+/// With the AVI header selected, that is DVI signalling.
+pub fn pkt_header_empty() -> bool {
+    (0xE875..=0xE877).all(|r| reg::read(r) == 0)
 }
 
 pub fn pkt_acphdr_get(ty: u8) -> bool {

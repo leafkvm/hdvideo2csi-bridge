@@ -1,20 +1,21 @@
 //! Application layer: all daemon-wide state and per-tick state machines.
 
 pub mod audio;
+pub mod health;
 pub mod rx;
 pub mod tx;
 pub mod video_scrambler_chip;
 
 use std::sync::LazyLock;
 
-use crate::app::rx::{Rx, RxEnv, RxStatus};
+use crate::app::rx::{Rx, RxEnv, RxState, RxStatus};
 use crate::app::tx::{Tx, TxEnv, TxFrame, TxState};
 use crate::config::Level;
 use crate::drv::sink::{self, SinkEvent};
 use crate::drv::{self, mipi_tx, video_color};
 use crate::iio::VoltageChannel;
 use crate::stub;
-use crate::stub::{Color, StubEvent};
+use crate::stub::{Color, Failure, RxStage, Status, StubEvent};
 use crate::time;
 
 /// Daemon-wide state. Owned by `main`. The Rx and Tx state machines each own
@@ -44,6 +45,9 @@ pub struct App {
     /// audio levels can be pushed independently each tick without clobbering.
     last_video_event: Option<SinkEvent>,
     last_audio_event: Option<SinkEvent>,
+
+    /// Last status pushed to the kernel; a report goes out only on change.
+    last_status: Option<Status>,
 }
 
 static FIVE_V: LazyLock<VoltageChannel> = LazyLock::new(|| {
@@ -137,9 +141,12 @@ impl App {
         self.output_format_ready = mipi_tx::csi_packet_format(self.tx.format).is_some()
             && crate::stub::supports_output_format(self.tx.format);
         if !self.output_format_ready {
-            log::error!(
-                "Unsupported native output format: {}; keeping video disabled",
-                self.tx.format
+            self.rx.health.fail(
+                Failure::Format,
+                format_args!(
+                    "no CSI packing for {}; keeping video disabled",
+                    self.tx.format
+                ),
             );
         }
         self.rx.format_pending = false;
@@ -179,8 +186,12 @@ impl App {
             timing: rx.timing,
         };
         self.tx.tick(tx_env);
+        if let Some((failure, detail)) = self.tx.failure.take() {
+            self.rx.health.fail(failure, detail);
+        }
 
         self.report_to_sink(rx);
+        self.report_status(rx_env);
 
         time::delay_ms(2);
     }
@@ -216,6 +227,46 @@ impl App {
             sink::report_audio_ready(&mut self.last_audio_event, rate);
         } else {
             sink::report_audio_disappear(&mut self.last_audio_event);
+        }
+    }
+
+    /// Describe the bring-up progress in the stub's chip-independent terms.
+    fn status(&self, env: RxEnv) -> Status {
+        let rx = &self.rx;
+        let rx_stage = match rx.state {
+            RxState::PowerOn | RxState::WaitSource => {
+                if env.kernel_edid.is_none() {
+                    RxStage::NoEdid
+                } else if !env.source_5v.is_high() {
+                    RxStage::NoSource
+                } else {
+                    RxStage::Connecting
+                }
+            }
+            RxState::ClkStableCheck => RxStage::WaitClock,
+            RxState::PllConfig => RxStage::LinkSetup,
+            RxState::PktRdy => RxStage::WaitInfoframe,
+            RxState::VideoCheck => RxStage::WaitSync,
+            RxState::PlayBack => RxStage::Locked,
+        };
+        Status {
+            rx_stage: rx_stage as u8,
+            last_error: rx.health.last_error.map_or(0, |f| f as u8),
+            error_count: rx.health.error_count,
+            ..Default::default()
+        }
+    }
+
+    fn report_status(&mut self, env: RxEnv) {
+        let status = self.status(env);
+        if self.last_status == Some(status) {
+            return;
+        }
+        // Latched even on failure: a rejected report would fail again on
+        // every tick.
+        self.last_status = Some(status);
+        if let Err(e) = stub::report_status(&status) {
+            log::error!("Failed to report receiver status to kernel: {}", e);
         }
     }
 

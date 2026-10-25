@@ -38,8 +38,8 @@ pub fn phug_set() {
     reg::write(0xE20B, 0x10);
     reg::write(0xE20C, 0x12);
     reg::write(0xE81A, 0x0c);
-    log::info!("Register E70A: value=0x{:02X}", reg::read(0xE70A));
-    log::info!("Register E228: value=0x{:02X}", reg::read(0xE228));
+    log::debug!("Register E70A: value=0x{:02X}", reg::read(0xE70A));
+    log::debug!("Register E228: value=0x{:02X}", reg::read(0xE228));
 }
 
 fn value_set(channel: Channel, value: u8) {
