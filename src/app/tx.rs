@@ -17,6 +17,7 @@ use std::time::Duration;
 use crate::config::*;
 use crate::drv::mipi_tx as drv_tx;
 use crate::format::{BitDepth, MipiFormat, PixelEncoding};
+use crate::link::LinkConfig;
 use crate::reg;
 use crate::stub::Failure;
 use crate::time::Timer;
@@ -62,7 +63,7 @@ pub struct TxFrame {
 }
 
 /// All external inputs the transmitter needs per tick.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug)]
 pub struct TxEnv {
     pub frame: TxFrame,
     /// The receiver's `video` level: `true` while it is delivering live video.
@@ -75,6 +76,8 @@ pub struct TxEnv {
     /// (see [`crate::app::rx::RxStatus::timing`]); the transmitter only reads
     /// it. Meaningful once `video` is `true`.
     pub timing: Timing,
+    /// The receiver's lanes and lane-rate ceiling.
+    pub link: LinkConfig,
 }
 
 // ---- Tx ----
@@ -185,8 +188,14 @@ impl Tx {
                 // `self.format` is the native input format, already
                 // resolved by App::video_format_handler before this tick's tx.tick()
                 // (see App::tick) — no copy from the receiver needed here.
-                self.para_set();
+                self.para_set(env.link.lanes);
                 self.data_rate_adj();
+                if self.data_rate > env.link.max_lane_rate_kbps {
+                    self.failure =
+                        Some((Failure::BadTiming, "lane rate above the receiver's maximum"));
+                    self.set_state(TxState::UpstreamVideoReady);
+                    return;
+                }
                 drv_tx::pll_set(self);
                 drv_tx::phy_timing_para_set(self, env.frame.pixel_encoding);
                 self.digital_config();
@@ -263,8 +272,8 @@ impl Tx {
         );
     }
 
-    fn para_set(&mut self) {
-        self.lane_num = MIPI_LANE_NUM;
+    fn para_set(&mut self, lanes: u8) {
+        self.lane_num = lanes;
         self.port_num = MIPI_PORT_NUM;
         self.clock_burst = MIPI_CLOCK_BURST;
         log::debug!("Transmitter clock burst: enabled={}", self.clock_burst);

@@ -8,7 +8,16 @@ license = "GPL-3.0-only"
 name = "hd2csi"
 path = "src/main.rs"
 
+[features]
+# The link to the capture side, exactly one: the kernel CSI stub (vendor
+# V4L2 capture path) or the org.leafkvm.Bridge D-Bus service (rk-vicap).
+default = ["stub"]
+stub = []
+dbus = ["dep:dbus", "dep:dbus-crossroads"]
+
 [dependencies]
 nix = { version = "0.31.2", features = ["ioctl", "poll"] }
+dbus = { version = "0.9.12", optional = true }
+dbus-crossroads = { version = "0.5.3", optional = true }
 log = "0.4.29"
 env_logger = "0.11"

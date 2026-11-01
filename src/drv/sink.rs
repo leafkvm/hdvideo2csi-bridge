@@ -1,5 +1,5 @@
-//! Pushes detected video / audio state to the kernel stub via
-//! the Video Input CSI stub device.
+//! Pushes detected video / audio state to the capture side (the kernel CSI
+//! stub or the D-Bus service, see [`crate::link`]).
 //!
 //! Each `report_*` function dedups against the last reported event via the
 //! shared `last_event` slot the caller owns; a call that matches the last
@@ -7,7 +7,7 @@
 
 use crate::drv::audio::Rate;
 use crate::format::MipiFormat;
-use crate::stub;
+use crate::link;
 use crate::stub::{Color, VideoState};
 use crate::timing::Timing;
 use std::io;
@@ -50,7 +50,7 @@ pub fn report_video_ready(
     if *last != Some(event) {
         // Latch only successful reports. Format-only and colour-only changes
         // are real source changes even if video never disappeared in between.
-        stub::report_video(Some(video))?;
+        link::report_video(Some(video))?;
         *last = Some(event);
         log::debug!("Kernel sink event: video ready, state={:?}", video);
     }
@@ -76,10 +76,10 @@ pub fn report_video_disappear(last: &mut Option<SinkEvent>) -> io::Result<()> {
     if *last == Some(SinkEvent::VideoDisappear) {
         return Ok(());
     }
-    stub::report_video(None)?;
+    link::report_video(None)?;
     *last = Some(SinkEvent::VideoDisappear);
     log::debug!("Kernel sink event: video unavailable");
-    if let Err(e) = stub::report_audio(0, false) {
+    if let Err(e) = link::report_audio(0, false) {
         log::error!("Failed to report inactive audio to kernel: {}", e);
     }
     Ok(())
@@ -90,7 +90,7 @@ pub fn report_audio_ready(last: &mut Option<SinkEvent>, rate: Rate) {
     if !arm(last, SinkEvent::AudioReady(sample_rate_hz), "audio ready") {
         return;
     }
-    if let Err(e) = stub::report_audio(sample_rate_hz, true) {
+    if let Err(e) = link::report_audio(sample_rate_hz, true) {
         log::error!("Failed to report active audio to kernel: {}", e);
     }
 }
@@ -99,7 +99,7 @@ pub fn report_audio_disappear(last: &mut Option<SinkEvent>) {
     if !arm(last, SinkEvent::AudioDisappear, "audio unavailable") {
         return;
     }
-    if let Err(e) = stub::report_audio(0, false) {
+    if let Err(e) = link::report_audio(0, false) {
         log::error!("Failed to report inactive audio to kernel: {}", e);
     }
 }

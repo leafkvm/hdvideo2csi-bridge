@@ -14,8 +14,8 @@ use crate::config::Level;
 use crate::drv::sink::{self, SinkEvent};
 use crate::drv::{self, mipi_tx, video_color};
 use crate::iio::VoltageChannel;
-use crate::stub;
-use crate::stub::{Color, Failure, RxStage, Status, StubEvent};
+use crate::link::{self, Event};
+use crate::stub::{Color, Failure, RxStage, Status};
 use crate::time;
 
 /// Daemon-wide state. Owned by `main`. The Rx and Tx state machines each own
@@ -94,7 +94,7 @@ impl App {
     /// result in `self.kernel_edid` (`None` = no usable EDID). This is the only
     /// place the daemon reads EDID from the stub.
     fn reload_kernel_edid(&mut self) {
-        self.kernel_edid = match stub::get_edid() {
+        self.kernel_edid = match link::get_edid() {
             Ok(e) => {
                 let blocks = e.blocks as usize;
                 match drv::edid::Edid::from_kernel(&e.data, blocks) {
@@ -139,7 +139,7 @@ impl App {
         // Never replace a deep-colour or unsupported input with a lower-depth
         // format. Keep video off unless the native packing and sink are supported.
         self.output_format_ready = mipi_tx::csi_packet_format(self.tx.format).is_some()
-            && crate::stub::supports_output_format(self.tx.format);
+            && link::supports_output_format(self.tx.format);
         if !self.output_format_ready {
             self.rx.health.fail(
                 Failure::Format,
@@ -154,8 +154,11 @@ impl App {
 
     /// One iteration of the main loop.
     pub fn tick(&mut self) {
-        while let Ok(Some(ev)) = stub::poll_event() {
-            self.handle_kernel_event(ev);
+        match link::poll_events() {
+            Ok(events) => events
+                .into_iter()
+                .for_each(|ev| self.handle_kernel_event(ev)),
+            Err(e) => panic!("{e}"),
         }
 
         // Advance the receiver and read its output levels.
@@ -182,7 +185,8 @@ impl App {
                 pixel_encoding: self.rx.pixel_encoding,
             },
             video: rx.video && self.output_format_ready,
-            stream_on: stub::stream_on().unwrap_or(false),
+            stream_on: link::stream_on().unwrap_or(false),
+            link: link::config(),
             timing: rx.timing,
         };
         self.tx.tick(tx_env);
@@ -265,23 +269,29 @@ impl App {
         // Latched even on failure: a rejected report would fail again on
         // every tick.
         self.last_status = Some(status);
-        if let Err(e) = stub::report_status(&status) {
+        if let Err(e) = link::report_status(&status) {
             log::error!("Failed to report receiver status to kernel: {}", e);
         }
     }
 
-    fn handle_kernel_event(&mut self, ev: StubEvent) {
+    fn handle_kernel_event(&mut self, ev: Event) {
         match ev {
-            StubEvent::EdidUpdate => {
+            Event::EdidUpdate => {
                 log::info!("Kernel EDID changed; reloading");
                 self.reload_kernel_edid();
                 self.rx.reload_edid();
             }
-            StubEvent::StreamChange(on) => log::info!(
+            Event::StreamChange(on) => log::info!(
                 "Kernel stream state changed: {}",
                 if on { "on" } else { "off" }
             ),
-            StubEvent::Unknown(n) => log::warn!("Unknown kernel stub event: {}", n),
+            Event::ConfigChange => {
+                // new lanes / lane-rate ceiling: compute the output again
+                if self.tx.state > TxState::UpstreamVideoReady {
+                    self.tx.set_state(TxState::UpstreamVideoReady);
+                }
+            }
+            Event::Unknown(n) => log::warn!("Unknown kernel stub event: {}", n),
         }
     }
 }
