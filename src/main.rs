@@ -2,12 +2,10 @@ use env_logger::Env;
 
 // The link to the capture side: exactly one of the two.
 #[cfg(all(feature = "stub", feature = "dbus"))]
-compile_error!(
-    "features `stub` and `dbus` are exclusive: build with --no-default-features --features dbus"
-);
+compile_error!("features `stub` and `dbus` are exclusive: enable only one");
 #[cfg(not(any(feature = "stub", feature = "dbus")))]
 compile_error!(
-    "one of the features `stub` (kernel CSI stub) or `dbus` (D-Bus service) is required"
+    "no default link: build with --features stub (kernel CSI stub) or --features dbus (D-Bus service)"
 );
 
 mod app;

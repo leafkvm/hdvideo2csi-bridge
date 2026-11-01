@@ -9,9 +9,8 @@ name = "hd2csi"
 path = "src/main.rs"
 
 [features]
-# The link to the capture side, exactly one: the kernel CSI stub (vendor
-# V4L2 capture path) or the org.leafkvm.Bridge D-Bus service (rk-vicap).
-default = ["stub"]
+# The link to the capture side, no default, enable exactly one: the kernel CSI
+# stub (vendor V4L2 capture path) or the org.leafkvm.Bridge D-Bus service (rk-vicap).
 stub = []
 dbus = ["dep:dbus", "dep:dbus-crossroads"]
 
