@@ -42,7 +42,6 @@ use crate::drv::{
 use crate::format::{MipiFormat, PixelEncoding};
 use crate::reg;
 use crate::stub::Failure;
-use crate::time;
 use crate::time::Timer;
 use crate::timing::Timing;
 
@@ -152,9 +151,6 @@ pub struct Rx {
     /// Failure streak, lock count and measurements; see [`Health`].
     pub health: Health,
 
-    pub vid_chk_scan: bool,
-
-    pub interlace: bool,
     pub pixel_encoding: PixelEncoding,
     pub format: MipiFormat,
 
@@ -387,7 +383,7 @@ impl Rx {
                     self.format = fmt;
                     log::debug!("Receiver input format: {}", fmt);
                     drv_rx::half_pix_pll_set();
-                    self.vid_chk_scan = false;
+                    self.timing = Timing::default();
                     self.timer.start();
                 }
                 if self.timer.due(Duration::from_millis(10)) {
@@ -395,15 +391,15 @@ impl Rx {
                         Stability::Stable => {
                             // Latch the timing — the receiver is its sole
                             // owner — and log it.
-                            self.timing = drv_sys::video_check_all_get();
                             let t = self.timing;
-                            let frame_rate_mhz = drv_sys::frame_rate_mhz();
                             log::info!(
-                                "Receiver locked: {}x{} at {:.2} Hz, pixel clock {:.2} MHz, total {}x{}, {}, {}",
+                                "Receiver locked: {}x{} field, interlaced={}, frame {} lines at {} mHz, pixel clock {} kHz, total {}x{}, {}, {}",
                                 t.h_active,
                                 t.v_active,
-                                frame_rate_mhz as f64 / 1000.0,
-                                t.pixel_clock as f64 / 1000.0,
+                                t.interlaced(),
+                                t.frame_height(),
+                                t.frame_rate_millihz(),
+                                t.pixel_clock,
                                 t.h_total,
                                 t.v_total,
                                 self.format,
@@ -411,7 +407,6 @@ impl Rx {
                             );
                             log::debug!("Receiver timing: {:?}", t);
                             self.format_pending = true;
-                            self.vid_chk_scan = true;
                             self.set_state(RxState::PlayBack);
                             return;
                         }
@@ -481,7 +476,8 @@ impl Rx {
             );
             self.set_state(RxState::ClkStableCheck);
         }
-        if self.state > RxState::VideoCheck && !drv_rx::video_stable() && !self.vid_chk_scan {
+        if self.state > RxState::VideoCheck && !drv_rx::video_stable() && !self.timing.interlaced()
+        {
             reg::clear_bit(0xE10A, 7);
             self.health.fail(
                 Failure::SyncLost,
@@ -562,23 +558,12 @@ impl Rx {
         );
     }
 
-    /// Resolve the video-check result: progressive formats gate on the chip's
-    /// stable bit; interlaced formats fall back to a timing scan.
+    /// The stable bit gates progressive acquisition, but does not identify
+    /// scan mode. Both paths collect fresh field evidence and coherent timing.
     fn vid_chk_deal(&mut self) -> Stability {
         match drv_rx::video_chk_stable(self) {
-            Stability::Stable => {
-                time::delay_ms(5);
-                let h = drv_sys::video_check_single_get(drv_sys::HACTIVE_POS) as u16;
-                let v = drv_sys::video_check_single_get(drv_sys::VACTIVE_POS) as u16;
-                if drv_rx::resolution_sane(h, v) {
-                    Stability::Stable
-                } else {
-                    Stability::Unstable
-                }
-            }
-            Stability::Unstable => {
+            Stability::Stable | Stability::Unstable => {
                 if drv_rx::vid_chk_scan(self) {
-                    log::debug!("Receiver video timing scan completed");
                     Stability::Stable
                 } else {
                     Stability::Unstable

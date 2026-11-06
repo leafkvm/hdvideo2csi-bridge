@@ -134,7 +134,10 @@ impl App {
         self.tx.pixel_encoding = self.rx.pixel_encoding;
         self.tx.format = self.rx.format;
         self.tx.bit_depth = self.rx.format.bit_depth();
-        self.color = video_color::configure_bypass(self.rx.pixel_encoding, self.rx.timing.v_active);
+        self.color = video_color::configure_bypass(
+            self.rx.pixel_encoding,
+            self.rx.timing.frame_height() as u16,
+        );
 
         // Never replace a deep-colour or unsupported input with a lower-depth
         // format. Keep video off unless the native packing and sink are supported.
@@ -181,7 +184,7 @@ impl App {
         // bring-up / rewind on them.
         let tx_env = TxEnv {
             frame: TxFrame {
-                interlace: self.rx.interlace,
+                interlace: rx.timing.interlaced(),
                 pixel_encoding: self.rx.pixel_encoding,
             },
             video: rx.video && self.output_format_ready,

@@ -79,8 +79,18 @@ pub fn pixel_clock_get() -> u32 {
 /// [`Timing`], including the frequency-meter `pixel_clock` (see
 /// [`pixel_clock_get`]).
 pub fn video_check_all_get() -> Timing {
+    let pixel_clock = pixel_clock_get();
     Timing {
-        pixel_clock: pixel_clock_get(),
+        pixel_clock,
+        ..video_check_geometry_get()
+    }
+}
+
+/// Registers can change at a field boundary; acquisition brackets this with
+/// field-indicator reads and rejects snapshots whose porches do not add up.
+pub fn video_check_geometry_get() -> Timing {
+    Timing {
+        pixel_clock: 0,
         h_total: video_check_single_get(HTOTAL_POS) as u16,
         h_active: video_check_single_get(HACTIVE_POS) as u16,
         h_fp: video_check_single_get(HFP_POS) as u16,
@@ -93,6 +103,7 @@ pub fn video_check_all_get() -> Timing {
         v_bp: video_check_single_get(VBP_POS) as u16,
         h_spol: video_check_single_get(HSPOL_POS) != 0,
         v_spol: video_check_single_get(VSPOL_POS) != 0,
+        second_field: None,
     }
 }
 

@@ -153,7 +153,7 @@ impl From<VideoState> for VideoInputCsiVideo {
                 v_bp: t.v_bp as u8,
                 h_sync_pol: t.h_spol,
                 v_sync_pol: t.v_spol,
-                interlaced: 0,
+                interlaced: u8::from(t.interlaced()),
                 mipi_byte_clock: video.mipi_byte_clock,
                 quantization: video.color.quantization,
                 colorspace: video.color.colorspace,

@@ -176,16 +176,6 @@ pub fn video_stable() -> bool {
     (reg::read(0xE580) & 0x04) != 0
 }
 
-/// Plausibility bounds for a measured active resolution (pixels / lines). Used
-/// to reject the transient garbage the video-check block latches on hot-plug.
-/// Both the settle check and the interlace scan gate on this so they agree on
-/// what counts as a sane measurement.
-pub fn resolution_sane(h: u16, v: u16) -> bool {
-    const MIN: u16 = 80;
-    const MAX: u16 = 5220;
-    (MIN < h && h < MAX) && (MIN < v && v < MAX)
-}
-
 pub fn pll_locked() -> bool {
     reg::read(0xE5F1) & 0xF >= 0x09
 }
@@ -303,30 +293,24 @@ pub fn chk_avi_rcv(rx: &mut Rx) -> Stability {
     }
 }
 
-/// Scan video-check registers until the active resolution settles. Updates
-/// `rx.interlace` and `rx.vid_chk_scan` on success. Returns `false` if the
-/// resolution kept changing or fell outside sane bounds.
+/// Require coherent field timing and observe E580's field indicator across
+/// multiple fields. Nonuniform delays avoid repeatedly sampling the same phase.
+/// The vendor resolution-only heuristic confuses e.g. 1920x540p with 1080i.
 pub fn vid_chk_scan(rx: &mut Rx) -> bool {
-    let mut prev_h = system::video_check_single_get(system::HACTIVE_POS) as u16;
-    let mut prev_v = system::video_check_single_get(system::VACTIVE_POS) as u16;
-    let (mut cur_h, mut cur_v) = (prev_h, prev_v);
-    for _ in 0..50 {
-        time::delay_ms(5);
-        cur_h = system::video_check_single_get(system::HACTIVE_POS) as u16;
-        cur_v = system::video_check_single_get(system::VACTIVE_POS) as u16;
-        if prev_h != cur_h || prev_v != cur_v {
-            return false;
-        }
-        if !resolution_sane(cur_h, cur_v) {
-            return false;
-        }
-        prev_h = cur_h;
-        prev_v = cur_v;
+    let mut scan = crate::timing::ScanDetector::default();
+    for index in 0..80 {
+        let before = reg::read(0xE580);
+        let timing = system::video_check_geometry_get();
+        let after = reg::read(0xE580);
+        log::trace!("Field sample: status={before:02x}/{after:02x}, timing={timing:?}");
+        scan.observe(before, timing, after);
+        time::delay_ms(1 + index % 5);
     }
-
-    let interlace = matches!((cur_h, cur_v), (1920, 540) | (1440, 288) | (1440, 240));
-    rx.interlace = interlace;
-    rx.vid_chk_scan = true;
-    log::debug!("Receiver timing scan: interlaced={}", interlace);
+    let Some(mut timing) = scan.finish() else {
+        return false;
+    };
+    timing.pixel_clock = system::pixel_clock_get();
+    rx.timing = timing;
+    log::debug!("Receiver timing scan: {:?}", timing);
     true
 }

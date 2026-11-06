@@ -312,13 +312,7 @@ impl Tx {
             return Err((Failure::SyncLost, "transmitter input timing is unstable"));
         }
 
-        let h_ok = timing.h_total == timing.h_active + timing.h_sw + timing.h_fp + timing.h_bp;
-        let v_ok = timing.v_total as u32
-            == timing.v_active as u32
-                + timing.v_sw as u32
-                + timing.v_fp as u32
-                + timing.v_bp as u32;
-        if h_ok && v_ok && timing.v_active & 1 == 0 && timing.h_active & 1 == 0 {
+        if timing.coherent() {
             log::debug!("Transmitter timing: {:?}", timing);
             drv_tx::timing_set(timing);
             drv_tx::in_hsync_pol_sel(timing.h_spol);

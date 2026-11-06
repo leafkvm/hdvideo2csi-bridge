@@ -8,7 +8,10 @@
 //!   `a{sv}` dictionary:
 //!   * `Video`: `sequence` (u, +1 on every change of the report), `present`
 //!     (b), `width`, `height` (u), `pixel_clock` (t, Hz), `h_total`,
-//!     `v_total` (u; frame rate = pixel_clock / (h_total * v_total)),
+//!     `v_total` (u; height and all vertical geometry describe one CSI field
+//!     when interlaced, specifically hardware field ID 0; no deinterlacing),
+//!     `frame_v_total` (u; full-frame total, summing both fields for interlace),
+//!     frame rate = pixel_clock / (h_total * frame_v_total),
 //!     `h_front_porch`, `h_sync`, `h_back_porch`, `v_front_porch`,
 //!     `v_sync`, `v_back_porch` (u), `h_sync_positive`, `v_sync_positive` (b),
 //!     `interlaced` (b), `encoding` (s: rgb, yuv444, yuv422, yuv420),
@@ -119,7 +122,8 @@ fn video_map(v: &Video) -> PropMap {
         put("v_back_porch", Box::new(t.v_bp as u32));
         put("h_sync_positive", Box::new(t.h_spol));
         put("v_sync_positive", Box::new(t.v_spol));
-        put("interlaced", Box::new(false));
+        put("interlaced", Box::new(t.interlaced()));
+        put("frame_v_total", Box::new(t.frame_total()));
         let enc = match s.format.pixel_encoding() {
             PixelEncoding::Rgb => "rgb",
             PixelEncoding::Yuv444 => "yuv444",
