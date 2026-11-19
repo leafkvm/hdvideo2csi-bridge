@@ -122,6 +122,11 @@ impl Debounce {
         }
     }
 
+    /// Consecutive bad readings so far.
+    pub fn bad_run(&self) -> u8 {
+        self.bad
+    }
+
     pub fn bump_bad(&mut self, unstable_threshold: u8) -> Stability {
         self.good = 0;
         self.bad = self.bad.saturating_add(1);
@@ -384,6 +389,9 @@ impl Rx {
                     log::debug!("Receiver input format: {}", fmt);
                     drv_rx::half_pix_pll_set();
                     self.timing = Timing::default();
+                    // A count left over from an earlier signal would skip
+                    // the early scans.
+                    self.vid_chk_dbnc = Debounce::default();
                     self.timer.start();
                 }
                 if self.timer.due(Duration::from_millis(10)) {
@@ -567,6 +575,15 @@ impl Rx {
                     Stability::Stable
                 } else {
                     Stability::Unstable
+                }
+            }
+            // Interlaced input never sets the stable bit. Try the scan early,
+            // but report a failure only once the full debounce has run out.
+            Stability::Pending if matches!(self.vid_chk_dbnc.bad_run(), 20 | 100) => {
+                if drv_rx::vid_chk_scan(self) {
+                    Stability::Stable
+                } else {
+                    Stability::Pending
                 }
             }
             Stability::Pending => Stability::Pending,

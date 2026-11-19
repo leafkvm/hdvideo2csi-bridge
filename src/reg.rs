@@ -25,6 +25,22 @@ pub fn read(addr: u16) -> u8 {
     })
 }
 
+/// Read consecutive registers in one I2C transaction, so they come from
+/// (nearly) the same instant.
+pub fn read_block(addr: u16, buf: &mut [u8]) {
+    let mut guard = REG.lock().unwrap();
+    let reg = guard.as_mut().expect("reg::init not called");
+    reg.read_block(addr, buf).unwrap_or_else(|e| {
+        log::error!(
+            "Failed to read {} registers from {:04X}: {}",
+            buf.len(),
+            addr,
+            e
+        );
+        buf.fill(0);
+    });
+}
+
 #[inline]
 pub fn write(addr: u16, val: u8) {
     let mut guard = REG.lock().unwrap();

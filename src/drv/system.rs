@@ -6,20 +6,6 @@ use crate::reg;
 use crate::time;
 use crate::timing::Timing;
 
-// ---- POS_INDEX ----
-pub const HTOTAL_POS: u8 = 0;
-pub const HACTIVE_POS: u8 = 1;
-pub const HFP_POS: u8 = 2;
-pub const HSW_POS: u8 = 3;
-pub const HBP_POS: u8 = 4;
-pub const VTOTAL_POS: u8 = 5;
-pub const VACTIVE_POS: u8 = 6;
-pub const VFP_POS: u8 = 7;
-pub const VSW_POS: u8 = 8;
-pub const VBP_POS: u8 = 9;
-pub const HSPOL_POS: u8 = 10;
-pub const VSPOL_POS: u8 = 11;
-
 // ---- Packet types ----
 pub const PKT_CUSTOM_INFOFRAME: u8 = 0x77;
 pub const PKT_VENDOR_SPECIFIC_INFOFRAME: u8 = 0x81;
@@ -48,24 +34,6 @@ pub fn frame_rate_mhz() -> u32 {
     (40_000_000_000 / sum) as u32
 }
 
-pub fn video_check_single_get(para: u8) -> u32 {
-    match para {
-        HTOTAL_POS => (pack_16(reg::read(0xE592), reg::read(0xE593)) as u32) << 1,
-        HACTIVE_POS => (pack_16(reg::read(0xE596), reg::read(0xE597)) as u32) << 1,
-        HFP_POS => (pack_16(reg::read(0xE58C), reg::read(0xE58D)) as u32) << 1,
-        HSW_POS => (pack_16(reg::read(0xE586), reg::read(0xE587)) as u32) << 1,
-        HBP_POS => (pack_16(reg::read(0xE58A), reg::read(0xE58B)) as u32) << 1,
-        VTOTAL_POS => pack_16(reg::read(0xE594), reg::read(0xE595)) as u32,
-        VACTIVE_POS => pack_16(reg::read(0xE598), reg::read(0xE599)) as u32,
-        VFP_POS => pack_16(reg::read(0xE590), reg::read(0xE591)) as u32,
-        VSW_POS => pack_16(reg::read(0xE588), reg::read(0xE589)) as u32,
-        VBP_POS => pack_16(reg::read(0xE58E), reg::read(0xE58F)) as u32,
-        HSPOL_POS => reg::get_bit(0xE580, 4) as u32,
-        VSPOL_POS => reg::get_bit(0xE580, 5) as u32,
-        _ => 0,
-    }
-}
-
 /// Pixel clock (kHz) measured with frequency meter 1 on the RxPLL half-pixel
 /// clock. The meter reports the *half*-pixel rate, so the full pixel clock is
 /// twice the reading.
@@ -89,22 +57,37 @@ pub fn video_check_all_get() -> Timing {
 /// Registers can change at a field boundary; acquisition brackets this with
 /// field-indicator reads and rejects snapshots whose porches do not add up.
 pub fn video_check_geometry_get() -> Timing {
-    Timing {
+    video_check_get().1
+}
+
+/// The video-check status (E580) and geometry, read as one 26-byte block
+/// E580..E599 in a single I2C transaction: about 2.6 ms at 100 kHz, against
+/// 11-12 ms for one register at a time. Horizontal values count 2 pixels.
+pub fn video_check_get() -> (u8, Timing) {
+    let mut r = [0u8; 26];
+    reg::read_block(0xE580, &mut r);
+    let at = |addr: u16| {
+        let i = usize::from(addr - 0xE580);
+        pack_16(r[i], r[i + 1])
+    };
+    let status = r[0];
+    let timing = Timing {
         pixel_clock: 0,
-        h_total: video_check_single_get(HTOTAL_POS) as u16,
-        h_active: video_check_single_get(HACTIVE_POS) as u16,
-        h_fp: video_check_single_get(HFP_POS) as u16,
-        h_sw: video_check_single_get(HSW_POS) as u16,
-        h_bp: video_check_single_get(HBP_POS) as u16,
-        v_total: video_check_single_get(VTOTAL_POS) as u16,
-        v_active: video_check_single_get(VACTIVE_POS) as u16,
-        v_fp: video_check_single_get(VFP_POS) as u16,
-        v_sw: video_check_single_get(VSW_POS) as u16,
-        v_bp: video_check_single_get(VBP_POS) as u16,
-        h_spol: video_check_single_get(HSPOL_POS) != 0,
-        v_spol: video_check_single_get(VSPOL_POS) != 0,
+        h_total: at(0xE592) << 1,
+        h_active: at(0xE596) << 1,
+        h_fp: at(0xE58C) << 1,
+        h_sw: at(0xE586) << 1,
+        h_bp: at(0xE58A) << 1,
+        v_total: at(0xE594),
+        v_active: at(0xE598),
+        v_fp: at(0xE590),
+        v_sw: at(0xE588),
+        v_bp: at(0xE58E),
+        h_spol: status & 0x10 != 0,
+        v_spol: status & 0x20 != 0,
         second_field: None,
-    }
+    };
+    (status, timing)
 }
 
 pub fn pkt_hd_header_set(opt: u8) {

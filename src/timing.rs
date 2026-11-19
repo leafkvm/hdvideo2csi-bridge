@@ -118,6 +118,13 @@ pub struct ScanDetector {
 
 impl ScanDetector {
     pub fn observe(&mut self, before: u8, timing: Timing, after: u8) {
+        // A snapshot is about 24 register reads, 11-12 ms: most of a 60 Hz
+        // field, so most snapshots of interlaced input straddle a field
+        // change. They carry no evidence and do not age the evidence so far.
+        if before >> 6 != after >> 6 {
+            self.progressive_good = 0;
+            return;
+        }
         for age in &mut self.ages {
             *age = age.saturating_add(1);
         }
@@ -125,7 +132,7 @@ impl ScanDetector {
             *self = Self::default();
         }
         let field = usize::from(before >> 6);
-        if field > 1 || before >> 6 != after >> 6 || !timing.coherent() {
+        if field > 1 || !timing.coherent() {
             self.progressive_good = 0;
             return;
         }
@@ -155,7 +162,7 @@ impl ScanDetector {
     }
 
     /// Unknown/unstable measurements are rejected instead of labelled progressive.
-    pub fn finish(self) -> Option<Timing> {
+    pub fn finish(&self) -> Option<Timing> {
         let last = self.last_field?;
         if self.ages[last] > 2 {
             return None;
@@ -166,9 +173,12 @@ impl ScanDetector {
         {
             let mut first = self.fields[0]?;
             let second = self.fields[1]?;
+            // Native HDMI interlace starts one field half a line later, which
+            // rounds sync and back porch either way: back porch 15 and 16 for
+            // 1080i and 480i, sync 2 and 3 for 1024x768i at 87 Hz (Radeon HDMI).
             if first.v_active != second.v_active
-                || first.v_sw != second.v_sw
-                || first.v_bp != second.v_bp
+                || first.v_sw.abs_diff(second.v_sw) > 1
+                || first.v_bp.abs_diff(second.v_bp) > 1
                 || first.v_total.abs_diff(second.v_total) > 1
             {
                 return None;
@@ -180,5 +190,121 @@ impl ScanDetector {
         } else {
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 480i field timing as measured through the VGA adapter: field ID 0
+    /// has 263 lines, field ID 1 262 (one more front porch line).
+    fn field_480i(field: u8) -> Timing {
+        Timing {
+            h_total: 1716,
+            h_active: 1440,
+            h_fp: 38,
+            h_sw: 124,
+            h_bp: 114,
+            v_total: 263 - u16::from(field),
+            v_active: 240,
+            v_fp: 5 - u16::from(field),
+            v_sw: 3,
+            v_bp: 15,
+            ..Timing::default()
+        }
+    }
+
+    /// The tail of a scan from the rig: a run of straddling snapshots
+    /// (indicator changed during the reads, geometry of either field) ended
+    /// a scan, so the evidence aged out and the lock failed.
+    #[test]
+    fn straddling_snapshots_do_not_age_the_evidence() {
+        let mut scan = ScanDetector::default();
+        for _ in 0..4 {
+            scan.observe(0x00, field_480i(0), 0x00);
+            scan.observe(0x40, field_480i(1), 0x40);
+        }
+        for i in 0..12u8 {
+            let (before, after) = if i % 2 == 0 {
+                (0x40, 0x00)
+            } else {
+                (0x00, 0x40)
+            };
+            scan.observe(before, field_480i(i % 2), after);
+        }
+        scan.observe(0x00, field_480i(0), 0x00);
+        let timing = scan.finish().expect("interlaced lock");
+        assert!(timing.interlaced());
+        assert_eq!(timing.frame_total(), 525);
+        assert_eq!(timing.frame_height(), 480);
+    }
+
+    /// 1080i60 from a Radeon HDMI output: the fields differ in back porch
+    /// as well as in front porch and total.
+    #[test]
+    fn fields_may_differ_by_one_back_porch_line() {
+        let field = |id: u8| Timing {
+            h_total: 2200,
+            h_active: 1920,
+            h_fp: 88,
+            h_sw: 44,
+            h_bp: 148,
+            v_total: 563 - u16::from(id),
+            v_active: 540,
+            v_fp: 3 - 2 * u16::from(id),
+            v_sw: 5,
+            v_bp: 15 + u16::from(id),
+            ..Timing::default()
+        };
+        let mut scan = ScanDetector::default();
+        for _ in 0..4 {
+            scan.observe(0x30, field(0), 0x30);
+            scan.observe(0x70, field(1), 0x70);
+        }
+        let timing = scan.finish().expect("interlaced lock");
+        assert!(timing.interlaced());
+        assert_eq!(timing.frame_total(), 1125);
+        assert_eq!(timing.frame_height(), 1080);
+    }
+
+    #[test]
+    fn fields_may_differ_by_one_sync_line() {
+        // 1024x768i at 87 Hz from Radeon HDMI, as measured.
+        let field = |v_total, v_fp, v_sw, v_bp| Timing {
+            h_total: 1264,
+            h_active: 1024,
+            h_fp: 8,
+            h_sw: 176,
+            h_bp: 56,
+            v_total,
+            v_active: 384,
+            v_fp,
+            v_sw,
+            v_bp,
+            ..Timing::default()
+        };
+        let mut scan = ScanDetector::default();
+        for _ in 0..4 {
+            scan.observe(0x30, field(409, 2, 3, 20), 0x30);
+            scan.observe(0x70, field(408, 1, 2, 21), 0x70);
+        }
+        let timing = scan.finish().expect("interlaced lock");
+        assert!(timing.interlaced());
+        assert_eq!(timing.frame_total(), 817);
+        assert_eq!(timing.frame_height(), 768);
+    }
+
+    #[test]
+    fn steady_stable_snapshots_are_progressive() {
+        let mut scan = ScanDetector::default();
+        let mut t = field_480i(1);
+        t.v_active = 480;
+        t.v_total = 502;
+        for _ in 0..10 {
+            scan.observe(0x4c, t, 0x4c);
+        }
+        let timing = scan.finish().expect("progressive lock");
+        assert!(!timing.interlaced());
     }
 }

@@ -181,7 +181,9 @@ pub fn pll_locked() -> bool {
 }
 
 pub fn video_chk_stable(rx: &mut Rx) -> Stability {
-    if video_stable() {
+    let status = reg::read(0xE580);
+    log::trace!("Video check: status={status:02x}");
+    if status & 0x04 != 0 {
         rx.vid_chk_dbnc.bump_good(20)
     } else {
         rx.vid_chk_dbnc.bump_bad(200)
@@ -298,15 +300,23 @@ pub fn chk_avi_rcv(rx: &mut Rx) -> Stability {
 /// The vendor resolution-only heuristic confuses e.g. 1920x540p with 1080i.
 pub fn vid_chk_scan(rx: &mut Rx) -> bool {
     let mut scan = crate::timing::ScanDetector::default();
+    let mut found = None;
+    // A snapshot is one block read, about 3 ms with the closing status read,
+    // so most fit within a field even at 87 Hz (11.5 ms fields). The scan
+    // ends as soon as the evidence suffices: 8 stable progressive snapshots,
+    // or both fields seen 3 times.
     for index in 0..80 {
-        let before = reg::read(0xE580);
-        let timing = system::video_check_geometry_get();
+        let (before, timing) = system::video_check_get();
         let after = reg::read(0xE580);
         log::trace!("Field sample: status={before:02x}/{after:02x}, timing={timing:?}");
         scan.observe(before, timing, after);
+        found = scan.finish();
+        if found.is_some() {
+            break;
+        }
         time::delay_ms(1 + index % 5);
     }
-    let Some(mut timing) = scan.finish() else {
+    let Some(mut timing) = found else {
         return false;
     };
     timing.pixel_clock = system::pixel_clock_get();
