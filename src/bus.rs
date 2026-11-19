@@ -14,7 +14,10 @@
 //!     frame rate = pixel_clock / (h_total * frame_v_total),
 //!     `h_front_porch`, `h_sync`, `h_back_porch`, `v_front_porch`,
 //!     `v_sync`, `v_back_porch` (u), `h_sync_positive`, `v_sync_positive` (b),
-//!     `interlaced` (b), `encoding` (s: rgb, yuv444, yuv422, yuv420),
+//!     `interlaced` (b), `pixel_repetition` (u: the AVI InfoFrame's factor,
+//!     1 for none; the sizes and clock above stay those on the wire, every
+//!     pixel sent this many times), `encoding` (s: rgb, yuv444, yuv422,
+//!     yuv420),
 //!     `data_type` (u, CSI-2), `virtual_channel` (u), `lanes` (u),
 //!     `lane_rate` (t, bit/s per lane), `quantization`, `colorspace` (u,
 //!     V4L2 enum values);
@@ -120,6 +123,7 @@ fn video_map(v: &Video) -> PropMap {
         put("v_sync_positive", Box::new(t.v_spol));
         put("interlaced", Box::new(t.interlaced()));
         put("frame_v_total", Box::new(t.frame_total()));
+        put("pixel_repetition", Box::new(s.pixel_repetition as u32));
         let enc = match s.format.pixel_encoding() {
             PixelEncoding::Rgb => "rgb",
             PixelEncoding::Yuv444 => "yuv444",
@@ -346,11 +350,16 @@ pub fn report_video(video: Option<VideoState>) -> io::Result<()> {
                 v.sequence,
                 match video {
                     Some(st) => format!(
-                        "{}x{} {} at {} kbit/s per lane",
+                        "{}x{} {} at {} kbit/s per lane{}",
                         st.timing.h_active,
                         st.timing.v_active,
                         st.format,
-                        st.mipi_byte_clock * 8
+                        st.mipi_byte_clock * 8,
+                        if st.pixel_repetition > 1 {
+                            format!(", pixel repetition {}", st.pixel_repetition)
+                        } else {
+                            String::new()
+                        }
                     ),
                     None => "no video".into(),
                 }

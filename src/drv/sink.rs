@@ -39,12 +39,14 @@ pub fn report_video_ready(
     mipi_byte_clock: u32,
     format: MipiFormat,
     color: Color,
+    pixel_repetition: u8,
 ) -> io::Result<()> {
     let video = VideoState {
         timing: output_timing(timing, format),
         mipi_byte_clock,
         format,
         color,
+        pixel_repetition,
     };
     let event = SinkEvent::VideoReady(video);
     if *last != Some(event) {

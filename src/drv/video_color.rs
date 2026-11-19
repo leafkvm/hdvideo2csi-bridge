@@ -47,8 +47,9 @@ fn read_avi(rx_enc: PixelEncoding) -> Option<Avi> {
 }
 
 /// Bypass all matrix, range and chroma-resampling stages, then describe the
-/// unmodified input samples. Range detection only affects metadata.
-pub fn configure_bypass(rx_enc: PixelEncoding, v_active: u16) -> Color {
+/// unmodified input samples: their colour and the AVI pixel repetition
+/// factor (1 without AVI). Range detection only affects metadata.
+pub fn configure_bypass(rx_enc: PixelEncoding, v_active: u16) -> (Color, u8) {
     disable();
     let avi = read_avi(rx_enc);
     // Explicit AVI Q takes precedence over sample extrema. With Q=Default
@@ -61,10 +62,12 @@ pub fn configure_bypass(rx_enc: PixelEncoding, v_active: u16) -> Color {
         None
     };
     let input = avi::input_color(avi, rx_enc, v_active, detected);
+    let repetition = avi.map_or(1, Avi::pixel_repetition);
     log::info!(
-        "Native video output: encoding={}, input color={:?}",
+        "Native video output: encoding={}, input color={:?}, pixel repetition={}",
         rx_enc,
-        input
+        input,
+        repetition
     );
     if input.colorspace == colorspace::DEFAULT {
         log::warn!(
@@ -75,5 +78,5 @@ pub fn configure_bypass(rx_enc: PixelEncoding, v_active: u16) -> Color {
         "Color conversion register values: Register E565 through Register E568={:02X?}",
         std::array::from_fn::<_, 4, _>(|i| reg::read(0xE565 + i as u16))
     );
-    input
+    (input, repetition)
 }

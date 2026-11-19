@@ -62,6 +62,15 @@ impl Avi {
         }
     }
 
+    /// Pixel repetition factor: each pixel is sent this many times (data
+    /// byte 5 bits 3:0 + 1). Reserved values (10..15) count as none.
+    pub fn pixel_repetition(self) -> u8 {
+        match self.db[4] & 0x0f {
+            pr @ 0..=9 => pr + 1,
+            _ => 1,
+        }
+    }
+
     pub fn ycc_range(self) -> Option<Range> {
         match self.db[4] >> 6 {
             0 => Some(Range::Limited),
@@ -120,5 +129,36 @@ pub fn input_color(
             },
             |a| a.colorspace(encoding, v_active),
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An RGB AVI InfoFrame (version 2) with data byte 5 = `db5`.
+    fn rgb_packet(db5: u8) -> [u8; 17] {
+        let mut p = [0u8; 17];
+        p[..3].copy_from_slice(&[0x82, 0x02, 13]);
+        p[4] = 0x00; // Y = RGB
+        p[5] = 0x08;
+        p[8] = db5;
+        p[3] = 0u8.wrapping_sub(p.iter().fold(0u8, |s, v| s.wrapping_add(*v)));
+        p
+    }
+
+    #[test]
+    fn pixel_repetition_field() {
+        for (db5, n) in [
+            (0x00, 1),
+            (0x01, 2),
+            (0x03, 4),
+            (0x09, 10),
+            (0x0a, 1),
+            (0x43, 4),
+        ] {
+            let avi = Avi::parse(rgb_packet(db5), PixelEncoding::Rgb).unwrap();
+            assert_eq!(avi.pixel_repetition(), n, "db5={db5:#x}");
+        }
     }
 }

@@ -133,6 +133,9 @@ pub struct VideoState {
     pub mipi_byte_clock: u32,
     pub format: MipiFormat,
     pub color: Color,
+    /// AVI pixel repetition factor (1: none); `timing` is the wire timing.
+    /// Only the D-Bus link reports it.
+    pub pixel_repetition: u8,
 }
 
 impl From<VideoState> for VideoInputCsiVideo {

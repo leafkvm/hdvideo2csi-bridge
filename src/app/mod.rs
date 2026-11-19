@@ -37,6 +37,10 @@ pub struct App {
     /// Defaults to DEFAULT/unknown until an input is resolved.
     pub color: Color,
 
+    /// AVI pixel repetition factor of the input (1: none), resolved with
+    /// `color`. The reported timing stays the wire timing.
+    pub pixel_repetition: u8,
+
     /// The stub supports the current CSI wire format. A failed atomic video
     /// report also clears this gate until the next receiver configuration.
     pub output_format_ready: bool,
@@ -134,7 +138,7 @@ impl App {
         self.tx.pixel_encoding = self.rx.pixel_encoding;
         self.tx.format = self.rx.format;
         self.tx.bit_depth = self.rx.format.bit_depth();
-        self.color = video_color::configure_bypass(
+        (self.color, self.pixel_repetition) = video_color::configure_bypass(
             self.rx.pixel_encoding,
             self.rx.timing.frame_height() as u16,
         );
@@ -218,6 +222,7 @@ impl App {
                 mipi_byte_clock,
                 self.tx.format,
                 self.color,
+                self.pixel_repetition,
             ) {
                 log::error!("Failed to publish CSI video state: {}", e);
                 self.output_format_ready = false;
