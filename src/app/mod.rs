@@ -7,6 +7,7 @@ pub mod tx;
 pub mod video_scrambler_chip;
 
 use std::sync::LazyLock;
+use std::time::Duration;
 
 use crate::app::rx::{Rx, RxEnv, RxState, RxStatus};
 use crate::app::tx::{Tx, TxEnv, TxFrame, TxState};
@@ -17,6 +18,15 @@ use crate::iio::VoltageChannel;
 use crate::link::{self, Event};
 use crate::stub::{Color, Failure, RxStage, Status};
 use crate::time;
+
+/// Tick period while the receiver plays back and the transmitter is at rest:
+/// the rewind checks then run at this rate, and the wait in between ends
+/// early when the link has a request.
+const IDLE_TICK: Duration = Duration::from_millis(20);
+
+/// How often status that only feeds logs or a slow check is read in
+/// playback: the audio clock and the video scrambler state.
+pub const STATUS_POLL: Duration = Duration::from_millis(100);
 
 /// Daemon-wide state. Owned by `main`. The Rx and Tx state machines each own
 /// their own bookkeeping; the only cross-domain glue kept here is the
@@ -161,6 +171,7 @@ impl App {
 
     /// One iteration of the main loop.
     pub fn tick(&mut self) {
+        let started = std::time::Instant::now();
         match link::poll_events() {
             Ok(events) => events
                 .into_iter()
@@ -204,7 +215,13 @@ impl App {
         self.report_to_sink(rx);
         self.report_status(rx_env);
 
-        time::delay_ms(2);
+        let resting = self.rx.state == RxState::PlayBack
+            && matches!(self.tx.state, TxState::AwaitStream | TxState::PlayBack);
+        if resting {
+            link::wait(IDLE_TICK.saturating_sub(started.elapsed()));
+        } else {
+            time::delay_ms(2);
+        }
     }
 
     /// Push the current video / audio levels to the kernel stub. The stub

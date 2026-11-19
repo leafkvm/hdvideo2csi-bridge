@@ -23,6 +23,7 @@
 
 use std::time::{Duration, Instant};
 
+use crate::app::STATUS_POLL;
 use crate::config::AUDIO_TEST_PATTERN;
 use crate::drv::audio as drv;
 use crate::drv::audio::Rate;
@@ -52,8 +53,8 @@ enum State {
         /// The lock-off-rate debug line has been logged for this acquisition.
         unknown_logged: bool,
     },
-    /// The I2S output runs with a verified clock.
-    Live { rate: Rate },
+    /// The I2S output runs with a verified clock, last checked at `checked`.
+    Live { rate: Rate, checked: Instant },
 }
 
 impl State {
@@ -97,6 +98,14 @@ impl Audio {
             (_, true) => {}
         }
 
+        // A live clock is rechecked every STATUS_POLL; the packets, above,
+        // every tick.
+        if let State::Live { rate, checked } = &mut self.state {
+            if checked.elapsed() < STATUS_POLL {
+                return Some(*rate);
+            }
+            *checked = Instant::now();
+        }
         let pll = drv::read_pll();
         match &mut self.state {
             State::Idle => None,
@@ -114,7 +123,10 @@ impl Audio {
                             "Receiver audio locked: {rate} after {} ms ({pll})",
                             since.elapsed().as_millis()
                         );
-                        self.state = State::Live { rate };
+                        self.state = State::Live {
+                            rate,
+                            checked: Instant::now(),
+                        };
                     }
                     return None;
                 }
@@ -139,7 +151,7 @@ impl Audio {
                 }
                 None
             }
-            State::Live { rate } => {
+            State::Live { rate, .. } => {
                 let rate = *rate;
                 // Live means the clock measures right. The lock flag only
                 // qualifies the entry: it can flicker for a moment after
@@ -173,6 +185,7 @@ impl Audio {
             log::info!("Receiver audio test pattern started: {TEST_PATTERN_RATE}");
             self.state = State::Live {
                 rate: TEST_PATTERN_RATE,
+                checked: Instant::now(),
             };
         }
         drv::read_pll()

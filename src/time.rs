@@ -26,6 +26,18 @@ impl Timer {
         self.start = Some(Instant::now());
     }
 
+    /// Restart for a periodic check: the next period starts where this one
+    /// ended, so checks average one per `period` however the ticks fall.
+    /// After a stall of more than a period it starts now, without a burst of
+    /// catch-up checks.
+    pub fn advance(&mut self, period: Duration) {
+        let now = Instant::now();
+        self.start = Some(match self.start {
+            Some(start) if now < start + 2 * period => start + period,
+            _ => now,
+        });
+    }
+
     /// `true` if `dur` has elapsed since [`start`](Self::start), or the timer
     /// has never been started.
     pub fn due(&self, dur: Duration) -> bool {

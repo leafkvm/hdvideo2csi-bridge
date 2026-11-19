@@ -98,13 +98,18 @@ pub fn pkt_hd_header_set(opt: u8) {
 /// The selected packet header reads all zero: nothing of that type arrives.
 /// With the AVI header selected, that is DVI signalling.
 pub fn pkt_header_empty() -> bool {
-    (0xE875..=0xE877).all(|r| reg::read(r) == 0)
+    pkt_header() == [0; 3]
+}
+
+/// The selected packet header, E875..E877.
+fn pkt_header() -> [u8; 3] {
+    let mut header = [0; 3];
+    reg::read_block(0xE875, &mut header);
+    header
 }
 
 pub fn pkt_acphdr_get(ty: u8) -> bool {
-    let b75 = reg::read(0xE875);
-    let b76 = reg::read(0xE876);
-    let b77 = reg::read(0xE877);
+    let [b75, b76, b77] = pkt_header();
     match ty {
         PKT_CUSTOM_INFOFRAME => b75 == 0x77,
         PKT_VENDOR_SPECIFIC_INFOFRAME => b75 == 0x81 && b76 == 0x01 && b77 == 0x1b,
@@ -158,27 +163,16 @@ pub fn fm_clk_set(fm: u8, src: u8) {
 }
 
 pub fn fm_clk_get(fm: u8) -> u32 {
-    match fm {
-        FREQ_METER_1 => {
-            reg::or(0xE540, 0x80);
-            let v = pack_24(
-                reg::read(0xE548) & 0x0f,
-                reg::read(0xE549),
-                reg::read(0xE54A),
-            );
-            reg::and(0xE540, 0x7f);
-            v
-        }
-        FREQ_METER_2 => {
-            reg::or(0xE550, 0x80);
-            let v = pack_24(
-                reg::read(0xE558) & 0x0f,
-                reg::read(0xE559),
-                reg::read(0xE55A),
-            );
-            reg::and(0xE550, 0x7f);
-            v
-        }
-        _ => 0,
-    }
+    let (control, result) = match fm {
+        FREQ_METER_1 => (0xE540, 0xE548),
+        FREQ_METER_2 => (0xE550, 0xE558),
+        _ => return 0,
+    };
+    // Bit 7 holds the result while it is read.
+    let source = reg::read(control) & 0x7f;
+    reg::write(control, source | 0x80);
+    let mut v = [0; 3];
+    reg::read_block(result, &mut v);
+    reg::write(control, source);
+    pack_24(v[0] & 0x0f, v[1], v[2])
 }

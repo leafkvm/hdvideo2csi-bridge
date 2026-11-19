@@ -32,6 +32,7 @@
 use std::time::Duration;
 
 use crate::app::audio::Audio;
+use crate::app::STATUS_POLL;
 use crate::app::health::Health;
 use crate::config::*;
 use crate::drv::audio::Rate;
@@ -173,6 +174,8 @@ pub struct Rx {
 
     /// Last scrambler receiver status word (used to de-duplicate log lines).
     pub scrambler_status_last: u8,
+    /// Paces the scrambler status reads in PlayBack.
+    pub scrambler_timer: Timer,
 
     /// Shared per-state timer; restarted on each transition that needs it.
     pub timer: Timer,
@@ -201,6 +204,9 @@ pub struct Rx {
 /// 100 ms or more as a disconnect; 500 ms leaves margin for the source to
 /// abort an EDID read in progress and to notice the replug afterwards.
 const HPD_HOLD: Duration = Duration::from_millis(500);
+/// Period of the clock, packet and video checks while bringing up a signal;
+/// the debounce thresholds count these checks.
+const CHECK_PERIOD: Duration = Duration::from_millis(10);
 
 impl Rx {
     /// One-shot bring-up.
@@ -321,12 +327,12 @@ impl Rx {
                     self.timer.start();
                     drv_vscr::dec_sw_rst();
                 }
-                if self.timer.due(Duration::from_millis(10)) {
+                if self.timer.due(CHECK_PERIOD) {
                     if drv_rx::chk_clk_stb(self) == Stability::Stable {
                         self.set_state(RxState::PllConfig);
                         return;
                     }
-                    self.timer.start();
+                    self.timer.advance(CHECK_PERIOD);
                 }
             }
             RxState::PllConfig => {
@@ -354,7 +360,7 @@ impl Rx {
                     drv_rx::depacket_rst();
                     self.timer.start();
                 }
-                if self.timer.due(Duration::from_millis(10)) {
+                if self.timer.due(CHECK_PERIOD) {
                     match drv_rx::chk_avi_rcv(self) {
                         Stability::Stable => {
                             drv_rx::avi_gcp_chg_int_en();
@@ -378,7 +384,7 @@ impl Rx {
                         }
                         Stability::Pending => {}
                     }
-                    self.timer.start();
+                    self.timer.advance(CHECK_PERIOD);
                 }
             }
             RxState::VideoCheck => {
@@ -394,7 +400,7 @@ impl Rx {
                     self.vid_chk_dbnc = Debounce::default();
                     self.timer.start();
                 }
-                if self.timer.due(Duration::from_millis(10)) {
+                if self.timer.due(CHECK_PERIOD) {
                     match self.vid_chk_deal() {
                         Stability::Stable => {
                             // Latch the timing — the receiver is its sole
@@ -425,7 +431,7 @@ impl Rx {
                         }
                         Stability::Pending => {}
                     }
-                    self.timer.start();
+                    self.timer.advance(CHECK_PERIOD);
                 }
             }
             RxState::PlayBack => {
@@ -510,7 +516,7 @@ impl Rx {
         // ---- rewind to PktRdy ----
         if self.state > RxState::PktRdy
             && drv_sys::pkt_acphdr_get(drv_sys::PKT_AVI_INFOFRAME)
-            && (drv_rx::avi_chg_int_get() || drv_rx::gcp_chg_int_get())
+            && drv_rx::avi_gcp_chg_int_get()
         {
             log::info!("Receiver color signaling changed");
             log::debug!(
@@ -525,7 +531,11 @@ impl Rx {
             self.set_state(RxState::PktRdy);
         }
 
-        if self.state == RxState::PlayBack && SCRAMBLER_RX_MODE != SCRAMBLER_NOT {
+        if self.state == RxState::PlayBack
+            && SCRAMBLER_RX_MODE != SCRAMBLER_NOT
+            && self.scrambler_timer.due(STATUS_POLL)
+        {
+            self.scrambler_timer.start();
             drv_vscr::ver_get(&mut self.scrambler_status_last);
         }
     }

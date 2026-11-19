@@ -253,13 +253,16 @@ pub fn avi_chg_int_en() {
     reg::or(0xE858, 0x20);
     avi_chg_int_clr();
 }
-pub fn avi_chg_int_get() -> bool {
-    if reg::get_bit(0xE8F3, 5) != 0 {
+/// The AVI or GCP change interrupt fired (E8F3 bit 5 or 4); clears both.
+pub fn avi_gcp_chg_int_get() -> bool {
+    let flags = reg::read(0xE8F3);
+    if flags & 0x20 != 0 {
         avi_chg_int_clr();
-        true
-    } else {
-        false
     }
+    if flags & 0x10 != 0 {
+        gcp_chg_int_clr();
+    }
+    flags & 0x30 != 0
 }
 pub fn gcp_chg_int_clr() {
     reg::or(0xE858, 0x04);
@@ -268,14 +271,6 @@ pub fn gcp_chg_int_clr() {
 pub fn gcp_chg_int_en() {
     reg::or(0xE858, 0x08);
     gcp_chg_int_clr();
-}
-pub fn gcp_chg_int_get() -> bool {
-    if reg::get_bit(0xE8F3, 4) != 0 {
-        gcp_chg_int_clr();
-        true
-    } else {
-        false
-    }
 }
 
 pub fn avi_gcp_chg_int_en() {

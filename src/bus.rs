@@ -419,3 +419,11 @@ pub fn config() -> LinkConfig {
 pub fn poll_events() -> io::Result<Vec<Event>> {
     with(|b| b.poll())
 }
+
+/// Wait up to `timeout` for D-Bus traffic; the next [`poll_events`] handles
+/// it. A lost connection shows there.
+pub fn wait(timeout: Duration) {
+    with(|b| {
+        let _ = b.conn.channel().read_write(Some(timeout));
+    })
+}

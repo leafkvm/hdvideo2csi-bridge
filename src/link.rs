@@ -43,6 +43,15 @@ pub fn config() -> LinkConfig {
 #[cfg(feature = "dbus")]
 pub use crate::bus::config;
 
+/// Sleep for up to `timeout`; the CSI stub has nothing to wake on.
+#[cfg(feature = "stub")]
+pub fn wait(timeout: std::time::Duration) {
+    std::thread::sleep(timeout);
+}
+
+#[cfg(feature = "dbus")]
+pub use crate::bus::wait;
+
 /// Every pending event, without blocking.
 #[cfg(feature = "stub")]
 pub fn poll_events() -> std::io::Result<Vec<Event>> {
