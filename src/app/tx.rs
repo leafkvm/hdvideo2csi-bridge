@@ -321,7 +321,7 @@ impl Tx {
         } else {
             Err((
                 Failure::BadTiming,
-                "measured porches do not add up to the totals, or a size is odd",
+                "measured porches do not add up to the totals",
             ))
         }
     }

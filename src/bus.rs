@@ -104,19 +104,15 @@ fn video_map(v: &Video) -> PropMap {
     put("present", Box::new(v.state.is_some()));
     if let Some(s) = v.state {
         let t = s.timing;
-        // YUV420 is measured at half the horizontal size and clock
-        let mul = if s.format.is_yuv420() { 2 } else { 1 };
-        put("width", Box::new(t.h_active as u32 * mul));
+        // already the full YUV420 size and clock (`sink::output_timing`)
+        put("width", Box::new(t.h_active as u32));
         put("height", Box::new(t.v_active as u32));
-        put(
-            "pixel_clock",
-            Box::new(t.pixel_clock as u64 * 1000 * mul as u64),
-        );
-        put("h_total", Box::new(t.h_total as u32 * mul));
+        put("pixel_clock", Box::new(t.pixel_clock as u64 * 1000));
+        put("h_total", Box::new(t.h_total as u32));
         put("v_total", Box::new(t.v_total as u32));
-        put("h_front_porch", Box::new(t.h_fp as u32 * mul));
-        put("h_sync", Box::new(t.h_sw as u32 * mul));
-        put("h_back_porch", Box::new(t.h_bp as u32 * mul));
+        put("h_front_porch", Box::new(t.h_fp as u32));
+        put("h_sync", Box::new(t.h_sw as u32));
+        put("h_back_porch", Box::new(t.h_bp as u32));
         put("v_front_porch", Box::new(t.v_fp as u32));
         put("v_sync", Box::new(t.v_sw as u32));
         put("v_back_porch", Box::new(t.v_bp as u32));

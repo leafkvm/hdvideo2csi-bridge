@@ -59,13 +59,14 @@ impl Timing {
             .unwrap_or(0)
     }
 
+    /// Sane sizes whose porches add up to the totals. Odd sizes are fine:
+    /// the transmitter is programmed with the measured size and the capture
+    /// side takes it as is.
     pub fn coherent(self) -> bool {
         self.h_active > 80
             && self.h_active < 5220
             && self.v_active > 80
             && self.v_active < 5220
-            && self.h_active & 1 == 0
-            && self.v_active & 1 == 0
             && u32::from(self.h_total)
                 == u32::from(self.h_active)
                     + u32::from(self.h_fp)
